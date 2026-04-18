@@ -437,6 +437,16 @@ class ARCApp:
             state="disabled")
         self.converge_btn.pack(side="left", padx=(8, 0))
 
+        # Export as Prompt button
+        self.export_btn = ctk.CTkButton(
+            btn_frame, text="Export as Prompt",
+            command=self._on_export_prompt,
+            font=ctk.CTkFont(size=13),
+            width=140, height=34,
+            fg_color="#27AE60", hover_color="#1E8449",
+            state="disabled")
+        self.export_btn.pack(side="left", padx=(8, 0))
+
         # Retry button (hidden until an API call fails)
         self.retry_btn = ctk.CTkButton(btn_frame, text="Retry",
                                         command=self._on_retry,
@@ -623,6 +633,7 @@ class ARCApp:
         self.run_btn.configure(state="disabled")
         self.save_btn.configure(state="disabled")
         self.converge_btn.configure(state="disabled")
+        self.export_btn.configure(state="disabled")
 
         threading.Thread(target=self._pipeline_worker,
                          args=(problem, claude_resp, self._get_context(), mode),
@@ -693,6 +704,7 @@ class ARCApp:
         self._status(f"{done_label.get(mode, 'ARC')} cycle complete.")
         self.root.after(0, lambda: self.run_btn.configure(state="normal"))
         self.root.after(0, lambda: self.save_btn.configure(state="normal"))
+        self.root.after(0, lambda: self.export_btn.configure(state="normal"))
         # Enable convergence if full mode completed with all three responses
         if mode == "full" and not self._gemini_resp.startswith("["):
             self.root.after(0, lambda: self.converge_btn.configure(state="normal"))
@@ -764,6 +776,71 @@ class ARCApp:
                            self._gemini_resp, context=self._get_context(),
                            convergence=self._convergence)
         self._status(f"Saved to {fp}")
+
+    def _on_export_prompt(self):
+        """Export the ARC cycle results as a Claude Code implementation prompt."""
+        if not hasattr(self, '_problem') or not self._problem:
+            return
+
+        context = self._get_context()
+        lines = []
+        lines.append("TASK: [Describe the implementation task here]\n")
+        if context:
+            lines.append(f"Project Context: {context}\n")
+        lines.append("---\n")
+        lines.append("This solution was designed through an ARC review cycle ")
+        lines.append("(Claude built, GPT challenged, Gemini audited).\n\n")
+
+        # Extract key recommendations
+        lines.append("PROBLEM:\n")
+        lines.append(self._problem[:500])
+        if len(self._problem) > 500:
+            lines.append("...\n")
+        lines.append("\n\n")
+
+        lines.append("AGREED APPROACH (from ARC review):\n")
+        # Use Gemini's executive recommendation if available, otherwise GPT's review
+        if self._gemini_resp and not self._gemini_resp.startswith("[") and not self._gemini_resp.startswith("("):
+            lines.append("[Gemini's Executive Recommendation — extract the actionable parts below]\n")
+            # Take last 1000 chars of Gemini response (usually the recommendation)
+            gemini_tail = self._gemini_resp[-1500:]
+            lines.append(gemini_tail)
+        elif self._gpt_resp and not self._gpt_resp.startswith("["):
+            lines.append("[GPT's Review — extract the actionable parts below]\n")
+            lines.append(self._gpt_resp[-1000:])
+        lines.append("\n\n")
+
+        # Add convergence insights if available
+        if self._convergence:
+            lines.append("CONVERGENCE NOTES:\n")
+            if self._convergence.get('claude'):
+                lines.append(f"Claude's response to audit:\n{self._convergence['claude'][:500]}\n\n")
+            if self._convergence.get('gpt'):
+                lines.append(f"GPT's response to audit:\n{self._convergence['gpt'][:500]}\n\n")
+
+        lines.append("---\n")
+        lines.append("VERIFY:\n")
+        lines.append("- All relevant files compile\n")
+        lines.append("- Existing tests pass\n")
+        lines.append("- New functionality works as described\n")
+
+        prompt_text = "".join(lines)
+
+        # Save to file
+        save_dir = Path(__file__).parent / 'exports'
+        save_dir.mkdir(exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fp = save_dir / f'prompt_{ts}.md'
+        with open(fp, 'w', encoding='utf-8') as f:
+            f.write(prompt_text)
+
+        # Also copy to clipboard
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(prompt_text)
+            self._status(f"Prompt exported to {fp} and copied to clipboard")
+        except Exception:
+            self._status(f"Prompt exported to {fp}")
 
     def run(self):
         self.root.mainloop()

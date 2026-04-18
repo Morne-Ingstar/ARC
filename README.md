@@ -116,6 +116,30 @@ Every ARC cycle is saved as a timestamped markdown file in `exchanges/`,
 preserving the full problem → solution → critique → audit chain for
 reference.
 
+### Model Selector
+
+Dropdown per role lets you pick the exact model version:
+- **GPT:** gpt-4o, gpt-4o-mini, o3, o3-mini
+- **Gemini:** gemini-2.5-flash, gemini-2.5-pro, gemini-3-flash
+- **Claude:** claude-sonnet-4, claude-opus-4 (if API key set)
+
+Swap models without editing code. When a model gets deprecated, just
+pick a different one from the dropdown.
+
+### Convergence Loop
+
+After a Full ARC cycle, click **"Seek Convergence"** to send Gemini's
+audit back to Claude and GPT. Each responds with agree/disagree on
+specific recommendations. One round only — if they still disagree after
+seeing the audit, that disagreement is the signal, not a bug.
+
+### Prompt Export
+
+After any cycle, click **"Export as Prompt"** to generate a ready-to-use
+implementation prompt from the converged recommendations. Includes the
+agreed approach, concerns to address, and project context. Copy directly
+into Claude Code or any coding assistant.
+
 ## When ARC Works (and When It Doesn't)
 
 **ARC works best** for problems requiring reasoning under uncertainty:
@@ -266,10 +290,17 @@ Fast mode is free. Review mode costs only the GPT call.
 - [x] Exchange saving to markdown
 - [x] Aggressive system prompts (Devil's Advocate + Consensus Failures)
 - [x] Executive Recommendation in Gemini output
-- [ ] Halt on API error + retry button
+- [x] Halt on API error + retry button
+- [x] Model selector per role (GPT, Gemini, Claude)
+- [x] Convergence loop (Seek Convergence button)
+- [x] Enum-based Gemini error diagnostics
+- [x] Prompt export (Export as Prompt button)
+- [ ] Role rotation (shuffle which model plays which role)
 - [ ] Confidence divergence indicators
 - [ ] Contradiction highlighting in UI
 - [ ] Custom role definitions
+- [ ] Local model support (Ollama)
+- [ ] Cost tracking per session
 - [ ] Voice input via Samsara integration
 
 ## License
