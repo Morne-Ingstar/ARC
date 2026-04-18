@@ -1,0 +1,17 @@
+# API keys
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Old name (keeping arc.py as canonical)
+prism.py
+
+# Saved exchanges (personal data)
+exchanges/
+
+# IDE
+.idea/
+.vscode/
