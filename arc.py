@@ -128,7 +128,7 @@ def call_gpt(problem, claude_response, context="", system_prompt=None):
 
 def call_gemini(problem, claude_response, gpt_response, context=""):
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-3-flash",
         system_instruction=SYSTEM_PROMPTS['gemini'],
     )
     prompt = _with_context(
