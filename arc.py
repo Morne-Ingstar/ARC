@@ -144,13 +144,21 @@ def call_gemini(problem, claude_response, gpt_response, context=""):
         return response.text
     except ValueError:
         # response.text throws ValueError if no valid parts
-        # Check if safety filters blocked it
+        # Gemini finish_reason enum: 1=STOP, 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER
+        reason = None
         if response.candidates and response.candidates[0].finish_reason:
             reason = response.candidates[0].finish_reason
-            return (f"[Gemini returned no content. Finish reason: {reason}. "
-                    f"This may be a safety filter issue. Try rephrasing the problem "
-                    f"or reducing adversarial language in the input.]")
-        return "[Gemini returned an empty response. Try again.]"
+        if reason == 3:
+            return "[ERROR] Gemini safety filter blocked the response. Try rephrasing."
+        elif reason == 1:
+            return ("[ERROR] Model glitch: Gemini returned an empty successful response. "
+                    "This is a known quirk with complex adversarial prompts. Try running again.")
+        elif reason == 2:
+            return "[ERROR] Gemini hit max token limit. Try a shorter input."
+        elif reason == 4:
+            return "[ERROR] Gemini blocked for recitation (copyright/IP). Try rephrasing."
+        else:
+            return f"[ERROR] Gemini returned no content. Finish reason: {reason}"
 
 
 def save_exchange(problem, claude_resp, gpt_resp, gemini_resp, context=""):
