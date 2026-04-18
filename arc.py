@@ -41,6 +41,19 @@ DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_GPT_MODEL = "gpt-4o"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
+# Provider registry — explicit mapping, not prefix guessing
+MODEL_REGISTRY = {
+    "claude-sonnet-4-20250514": "anthropic",
+    "claude-opus-4-20250514": "anthropic",
+    "gpt-4o": "openai",
+    "gpt-4o-mini": "openai",
+    "o3": "openai",
+    "o3-mini": "openai",
+    "gemini-2.5-flash": "google",
+    "gemini-2.5-pro": "google",
+    "gemini-3-flash": "google",
+}
+
 # --- API availability ---
 
 HAS_CLAUDE_API = False
@@ -125,7 +138,10 @@ def _with_context(text, context):
 
 
 def _detect_provider(model_name):
-    """Detect API provider from model name."""
+    """Detect API provider from model name using explicit registry."""
+    if model_name in MODEL_REGISTRY:
+        return MODEL_REGISTRY[model_name]
+    # Fallback to prefix for unknown models (e.g., newly released ones)
     if model_name.startswith("claude"):
         return "anthropic"
     elif model_name.startswith(("gpt", "o3", "o1")):
@@ -199,113 +215,36 @@ if HAS_GEMINI:
     ALL_MODELS.extend(GEMINI_MODELS)
 
 
-def call_claude(problem, context="", model=None):
-    client = anthropic.Anthropic()
-    msg = client.messages.create(
-        model=model or DEFAULT_CLAUDE_MODEL, max_tokens=4096,
-        system=SYSTEM_PROMPTS['claude'],
-        messages=[{"role": "user", "content": _with_context(problem, context)}],
-    )
-    return msg.content[0].text
-
-def call_gpt(problem, claude_response, context="", system_prompt=None, model=None):
-    client = openai.OpenAI()
-    prompt = _with_context(
-        f"ORIGINAL PROBLEM:\n{problem}\n\n"
-        f"CLAUDE'S PROPOSED SOLUTION:\n{claude_response}\n\n"
-        f"Please review Claude's solution.",
-        context)
-    resp = client.chat.completions.create(
-        model=model or DEFAULT_GPT_MODEL, max_tokens=4096,
-        messages=[
-            {"role": "system", "content": system_prompt or SYSTEM_PROMPTS['gpt']},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    return resp.choices[0].message.content
-
-def call_gemini(problem, claude_response, gpt_response, context="", model=None):
-    m = genai.GenerativeModel(
-        model_name=model or DEFAULT_GEMINI_MODEL,
-        system_instruction=SYSTEM_PROMPTS['gemini'],
-    )
-    prompt = _with_context(
-        f"ORIGINAL PROBLEM:\n{problem}\n\n"
-        f"CLAUDE'S PROPOSED SOLUTION:\n{claude_response}\n\n"
-        f"GPT'S REVIEW:\n{gpt_response}\n\n"
-        f"Please audit this exchange.",
-        context)
-    response = m.generate_content(prompt)
-
-    # Handle empty/blocked responses gracefully
-    try:
-        return response.text
-    except ValueError:
-        # response.text throws ValueError if no valid parts
-        # Gemini finish_reason enum: 1=STOP, 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER
-        reason = None
-        if response.candidates and response.candidates[0].finish_reason:
-            reason = response.candidates[0].finish_reason
-        if reason == 3:
-            return "[ERROR] Gemini safety filter blocked the response. Try rephrasing."
-        elif reason == 1:
-            return ("[ERROR] Model glitch: Gemini returned an empty successful response. "
-                    "This is a known quirk with complex adversarial prompts. Try running again.")
-        elif reason == 2:
-            return "[ERROR] Gemini hit max token limit. Try a shorter input."
-        elif reason == 4:
-            return "[ERROR] Gemini blocked for recitation (copyright/IP). Try rephrasing."
-        else:
-            return f"[ERROR] Gemini returned no content. Finish reason: {reason}"
-
-
 CONVERGENCE_PROMPT = (
     "You previously participated in an ARC review cycle. Here is the full exchange:\n\n"
     "ORIGINAL PROBLEM:\n{problem}\n\n"
-    "CLAUDE'S SOLUTION:\n{claude_resp}\n\n"
-    "GPT'S REVIEW:\n{gpt_resp}\n\n"
-    "GEMINI'S AUDIT & RECOMMENDATION:\n{gemini_resp}\n\n"
-    "Based on Gemini's audit and recommendation, respond with:\n"
+    "BUILDER'S SOLUTION:\n{builder_resp}\n\n"
+    "CHALLENGER'S REVIEW:\n{challenger_resp}\n\n"
+    "AUDITOR'S AUDIT & RECOMMENDATION:\n{auditor_resp}\n\n"
+    "Based on the Auditor's findings, respond with:\n"
     "1. AGREE or DISAGREE with each specific recommendation\n"
     "2. For each disagreement, explain WHY and propose an alternative\n"
     "3. Keep it concise — only address points where you have a strong opinion\n"
     "4. If you fully agree with everything, say so briefly and explain why"
 )
 
+CONVERGENCE_SYSTEM = {
+    'builder': ("You are the Builder in ARC. You proposed a solution that was reviewed "
+                "and audited. Now respond to the audit — agree or disagree with each point."),
+    'challenger': ("You are the Challenger in ARC. You reviewed a solution that was then audited "
+                   "by a third AI. Now respond to the audit — agree or disagree with each point."),
+}
 
-def call_convergence_claude(problem, claude_resp, gpt_resp, gemini_resp,
-                             context="", model=None):
-    """Send Gemini's audit back to Claude for agree/disagree."""
-    client = anthropic.Anthropic()
+
+def call_convergence(role, model_name, problem, builder_resp, challenger_resp,
+                     auditor_resp, context=""):
+    """Send the auditor's findings back to builder or challenger for agree/disagree."""
     prompt = CONVERGENCE_PROMPT.format(
-        problem=problem, claude_resp=claude_resp,
-        gpt_resp=gpt_resp, gemini_resp=gemini_resp)
-    msg = client.messages.create(
-        model=model or DEFAULT_CLAUDE_MODEL, max_tokens=4096,
-        system="You are the Builder in ARC. You proposed a solution that was reviewed "
-               "and audited. Now respond to the audit — agree or disagree with each point.",
-        messages=[{"role": "user", "content": _with_context(prompt, context)}],
-    )
-    return msg.content[0].text
-
-
-def call_convergence_gpt(problem, claude_resp, gpt_resp, gemini_resp,
-                          context="", model=None):
-    """Send Gemini's audit back to GPT for agree/disagree."""
-    client = openai.OpenAI()
-    prompt = CONVERGENCE_PROMPT.format(
-        problem=problem, claude_resp=claude_resp,
-        gpt_resp=gpt_resp, gemini_resp=gemini_resp)
-    resp = client.chat.completions.create(
-        model=model or DEFAULT_GPT_MODEL, max_tokens=4096,
-        messages=[
-            {"role": "system", "content":
-             "You are the Reviewer in ARC. You reviewed a solution that was then audited "
-             "by a third AI. Now respond to the audit — agree or disagree with each point."},
-            {"role": "user", "content": _with_context(prompt, context)},
-        ],
-    )
-    return resp.choices[0].message.content
+        problem=problem, builder_resp=builder_resp,
+        challenger_resp=challenger_resp, auditor_resp=auditor_resp)
+    if context:
+        prompt = f"PROJECT CONTEXT:\n{context}\n\n{prompt}"
+    return call_any(model_name, CONVERGENCE_SYSTEM[role], prompt)
 
 
 def save_exchange(problem, claude_resp, gpt_resp, gemini_resp, context="",
@@ -324,10 +263,10 @@ def save_exchange(problem, claude_resp, gpt_resp, gemini_resp, context="",
         f.write(f"## Gemini (Auditor)\n\n{gemini_resp}\n\n")
         if convergence:
             f.write("---\n\n## Convergence Round\n\n")
-            if convergence.get('claude'):
-                f.write(f"### Claude's Response to Audit\n\n{convergence['claude']}\n\n")
-            if convergence.get('gpt'):
-                f.write(f"### GPT's Response to Audit\n\n{convergence['gpt']}\n\n")
+            if convergence.get('builder'):
+                f.write(f"### Builder's Response to Audit\n\n{convergence['builder']}\n\n")
+            if convergence.get('challenger'):
+                f.write(f"### Challenger's Response to Audit\n\n{convergence['challenger']}\n\n")
     return fp
 
 
@@ -347,7 +286,8 @@ class ARCApp:
         self._gemini_resp = ""
         self._failed_phase = None  # 'gpt' or 'gemini' — set on API failure
         self._pipeline_args = None  # stored args for retry
-        self._convergence = None  # {'claude': ..., 'gpt': ...} after convergence
+        self._convergence = None  # {'builder': ..., 'challenger': ...} after convergence
+        self._is_running = False  # prevent double execution
 
         # --- Project Context (collapsible) ---
         self._context_visible = False
@@ -683,8 +623,9 @@ class ARCApp:
 
     def _autofill_worker(self, problem):
         try:
-            resp = call_claude(problem, context=self._get_context(),
-                               model=self.claude_model_var.get())
+            builder_model = self.builder_model_var.get()
+            prompt = _with_context(problem, self._get_context())
+            resp = call_any(builder_model, SYSTEM_PROMPTS['claude'], prompt)
             def _fill():
                 self.claude_box.delete("1.0", "end")
                 self.claude_box.insert("1.0", resp)
@@ -698,6 +639,8 @@ class ARCApp:
     # --- Main pipeline: GPT review + Gemini audit ---
 
     def _on_run(self):
+        if self._is_running:
+            return  # prevent double execution
         problem = self.problem_box.get("1.0", "end").strip()
         claude_resp = self.claude_box.get("1.0", "end").strip()
         mode = self.mode_var.get()
@@ -734,6 +677,7 @@ class ARCApp:
         self.save_btn.configure(state="disabled")
         self.converge_btn.configure(state="disabled")
         self.export_btn.configure(state="disabled")
+        self._is_running = True
 
         threading.Thread(target=self._pipeline_worker,
                          args=(problem, claude_resp, self._get_context(), mode),
@@ -771,6 +715,7 @@ class ARCApp:
                 self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
                 self._status("Challenger failed — pipeline paused. Click Retry when ready.")
                 self._failed_phase = "gpt"
+                self._is_running = False
                 self._show_retry()
                 self.root.after(0, lambda: self.run_btn.configure(state="normal"))
                 return
@@ -799,6 +744,7 @@ class ARCApp:
                     self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
                     self._status("Auditor failed — pipeline paused. Click Retry when ready.")
                     self._failed_phase = "gemini"
+                    self._is_running = False
                     self._show_retry()
                     self.root.after(0, lambda: self.run_btn.configure(state="normal"))
                     return  # HALT
@@ -807,6 +753,7 @@ class ARCApp:
 
         done_label = {"review": "Review", "full": "Full ARC"}
         self._status(f"{done_label.get(mode, 'ARC')} cycle complete.")
+        self._is_running = False
         self.root.after(0, lambda: self.run_btn.configure(state="normal"))
         self.root.after(0, lambda: self.save_btn.configure(state="normal"))
         self.root.after(0, lambda: self.export_btn.configure(state="normal"))
@@ -815,64 +762,59 @@ class ARCApp:
             self.root.after(0, lambda: self.converge_btn.configure(state="normal"))
 
     def _on_converge(self):
-        """Send Gemini's audit back to Claude and GPT for agree/disagree."""
+        """Send auditor's findings back to builder and challenger for agree/disagree."""
         if not hasattr(self, '_gemini_resp') or not self._gemini_resp:
+            return
+        if self._is_running:
             return
         self.converge_btn.configure(state="disabled")
         self.run_btn.configure(state="disabled")
-        self._status("Seeking convergence — Claude and GPT responding to audit...")
+        self._is_running = True
+        self._status("Seeking convergence — Builder and Challenger responding to audit...")
         threading.Thread(target=self._convergence_worker, daemon=True).start()
 
     def _convergence_worker(self):
         sep = "\n" + "━" * 60 + "\n\n"
         context = self._get_context()
+        builder_model = self.builder_model_var.get()
+        challenger_model = self.challenger_model_var.get()
         self._convergence = {}
 
         self._append("─" * 60 + "\n")
         self._append("CONVERGENCE ROUND\n")
         self._append("─" * 60 + "\n\n")
 
-        # Claude responds to audit (parallel-ish but sequential for simplicity)
-        if HAS_CLAUDE_API:
-            self._status("Claude is responding to Gemini's audit...")
-            self._append("CLAUDE  (Response to Audit)\n" + "─" * 40 + "\n")
-            try:
-                claude_conv = call_convergence_claude(
-                    self._problem, self._claude_resp, self._gpt_resp,
-                    self._gemini_resp, context=context,
-                    model=self.claude_model_var.get())
-                self._convergence['claude'] = claude_conv
-                self._append(claude_conv + sep)
-            except Exception as e:
-                self._convergence['claude'] = f"[ERROR] {e}"
-                self._append(f"[ERROR] {e}" + sep)
-        else:
-            self._convergence['claude'] = "(No Claude API — paste manually if needed)"
-            self._append("CLAUDE  (Response to Audit)\n" + "─" * 40 + "\n")
-            self._append(self._convergence['claude'] + sep)
+        # Builder responds to audit
+        self._status(f"{builder_model} (Builder) responding to audit...")
+        self._append(f"{builder_model}  (Builder — Response to Audit)\n" + "─" * 40 + "\n")
+        try:
+            builder_conv = call_convergence(
+                'builder', builder_model, self._problem,
+                self._claude_resp, self._gpt_resp, self._gemini_resp,
+                context=context)
+            self._convergence['builder'] = builder_conv
+            self._append(builder_conv + sep)
+        except Exception as e:
+            self._convergence['builder'] = f"[ERROR] {e}"
+            self._append(f"[ERROR] {e}" + sep)
 
-        # GPT responds to audit
-        if HAS_GPT:
-            self._status("GPT is responding to Gemini's audit...")
-            self._append("GPT  (Response to Audit)\n" + "─" * 40 + "\n")
-            try:
-                gpt_conv = call_convergence_gpt(
-                    self._problem, self._claude_resp, self._gpt_resp,
-                    self._gemini_resp, context=context,
-                    model=self.gpt_model_var.get())
-                self._convergence['gpt'] = gpt_conv
-                self._append(gpt_conv + "\n\n")
-            except Exception as e:
-                self._convergence['gpt'] = f"[ERROR] {e}"
-                self._append(f"[ERROR] {e}\n\n")
-        else:
-            self._convergence['gpt'] = "[SKIPPED — no OPENAI_API_KEY]"
-            self._append("GPT  (Response to Audit)\n" + "─" * 40 + "\n")
-            self._append(self._convergence['gpt'] + "\n\n")
+        # Challenger responds to audit
+        self._status(f"{challenger_model} (Challenger) responding to audit...")
+        self._append(f"{challenger_model}  (Challenger — Response to Audit)\n" + "─" * 40 + "\n")
+        try:
+            challenger_conv = call_convergence(
+                'challenger', challenger_model, self._problem,
+                self._claude_resp, self._gpt_resp, self._gemini_resp,
+                context=context)
+            self._convergence['challenger'] = challenger_conv
+            self._append(challenger_conv + "\n\n")
+        except Exception as e:
+            self._convergence['challenger'] = f"[ERROR] {e}"
+            self._append(f"[ERROR] {e}\n\n")
 
         self._status("Convergence complete — review agreements and disagreements above.")
+        self._is_running = False
         self.root.after(0, lambda: self.run_btn.configure(state="normal"))
-        self.root.after(0, lambda: self.converge_btn.configure(state="disabled"))
 
     def _on_save(self):
         if not hasattr(self, '_problem') or not self._problem:
@@ -918,10 +860,10 @@ class ARCApp:
         # Add convergence insights if available
         if self._convergence:
             lines.append("CONVERGENCE NOTES:\n")
-            if self._convergence.get('claude'):
-                lines.append(f"Claude's response to audit:\n{self._convergence['claude'][:500]}\n\n")
-            if self._convergence.get('gpt'):
-                lines.append(f"GPT's response to audit:\n{self._convergence['gpt'][:500]}\n\n")
+            if self._convergence.get('builder'):
+                lines.append(f"Builder's response to audit:\n{self._convergence['builder'][:500]}\n\n")
+            if self._convergence.get('challenger'):
+                lines.append(f"Challenger's response to audit:\n{self._convergence['challenger'][:500]}\n\n")
 
         lines.append("---\n")
         lines.append("VERIFY:\n")
