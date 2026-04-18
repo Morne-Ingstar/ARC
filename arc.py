@@ -191,6 +191,8 @@ class ARCApp:
 
         self._gpt_resp = ""
         self._gemini_resp = ""
+        self._failed_phase = None  # 'gpt' or 'gemini' — set on API failure
+        self._pipeline_args = None  # stored args for retry
 
         # --- Project Context (collapsible) ---
         self._context_visible = False
@@ -304,6 +306,15 @@ class ARCApp:
                                        width=130, height=34, state="disabled")
         self.save_btn.pack(side="left", padx=(8, 0))
 
+        # Retry button (hidden until an API call fails)
+        self.retry_btn = ctk.CTkButton(btn_frame, text="Retry",
+                                        command=self._on_retry,
+                                        font=ctk.CTkFont(size=13),
+                                        width=80, height=34,
+                                        fg_color="#C0392B",
+                                        hover_color="#E74C3C")
+        # Don't pack yet — only shown on failure
+
         # Status dots
         dot_frame = ctk.CTkFrame(btn_frame, fg_color="transparent")
         dot_frame.pack(side="right")
@@ -377,6 +388,28 @@ class ARCApp:
     def _get_context(self):
         """Return project context text, or empty string if none."""
         return self.context_box.get("1.0", "end").strip()
+
+    def _show_retry(self):
+        """Show the retry button."""
+        self.root.after(0, lambda: self.retry_btn.pack(side="left", padx=(8, 0)))
+
+    def _hide_retry(self):
+        """Hide the retry button."""
+        self.root.after(0, lambda: self.retry_btn.pack_forget())
+
+    def _on_retry(self):
+        """Retry the failed pipeline phase and continue from there."""
+        if not self._failed_phase or not self._pipeline_args:
+            return
+        self._hide_retry()
+        self.run_btn.configure(state="disabled")
+        phase = self._failed_phase
+        self._failed_phase = None
+        threading.Thread(
+            target=self._pipeline_worker,
+            args=self._pipeline_args,
+            kwargs={"resume_from": phase},
+            daemon=True).start()
 
     def _append(self, text):
         def _do():
@@ -461,43 +494,64 @@ class ARCApp:
                          args=(problem, claude_resp, self._get_context(), mode),
                          daemon=True).start()
 
-    def _pipeline_worker(self, problem, claude_resp, context, mode):
+    def _pipeline_worker(self, problem, claude_resp, context, mode, resume_from=None):
         sep = "\n" + "━" * 60 + "\n\n"
         strict = self.strict_var.get()
         gpt_system = self._get_gpt_prompt()
 
+        # Store args for potential retry
+        self._pipeline_args = (problem, claude_resp, context, mode)
+
         # --- GPT Review ---
-        if HAS_GPT:
-            role_label = "Adversary" if strict else "Reviewer / Devil's Advocate"
-            self._status(f"GPT is {'attacking' if strict else 'reviewing'} Claude's solution...")
-            self._append(f"GPT  ({role_label})\n" + "─" * 40 + "\n")
-            try:
-                self._gpt_resp = call_gpt(problem, claude_resp,
-                                           context=context, system_prompt=gpt_system)
-                self._append(self._gpt_resp + sep)
-            except Exception as e:
-                self._gpt_resp = f"[ERROR] {e}"
-                self._append(self._gpt_resp + sep)
-        else:
-            self._gpt_resp = "[SKIPPED — no OPENAI_API_KEY]"
-            self._append("GPT  (Reviewer)\n" + "─" * 40 + "\n" + self._gpt_resp + sep)
+        if resume_from is None or resume_from == "gpt":
+            if HAS_GPT:
+                role_label = "Adversary" if strict else "Reviewer / Devil's Advocate"
+                self._status(f"GPT is {'attacking' if strict else 'reviewing'} Claude's solution...")
+                if resume_from == "gpt":
+                    self._append("\n[Retrying GPT...]\n\n")
+                self._append(f"GPT  ({role_label})\n" + "─" * 40 + "\n")
+                try:
+                    self._gpt_resp = call_gpt(problem, claude_resp,
+                                               context=context, system_prompt=gpt_system)
+                    self._append(self._gpt_resp + sep)
+                except Exception as e:
+                    self._gpt_resp = f"[ERROR] {e}"
+                    self._append(self._gpt_resp + "\n\n")
+                    self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
+                    self._status("GPT failed — pipeline paused. Click Retry when ready.")
+                    self._failed_phase = "gpt"
+                    self._show_retry()
+                    self.root.after(0, lambda: self.run_btn.configure(state="normal"))
+                    return  # HALT — do not continue to Gemini
+            else:
+                self._gpt_resp = "[SKIPPED — no OPENAI_API_KEY]"
+                self._append("GPT  (Reviewer)\n" + "─" * 40 + "\n" + self._gpt_resp + sep)
 
         # --- Gemini Audit (only in full mode) ---
-        if mode == "full":
-            if HAS_GEMINI:
-                self._status("Gemini is auditing the exchange...")
-                self._append("GEMINI  (Auditor + Synthesis)\n" + "─" * 40 + "\n")
-                try:
-                    self._gemini_resp = call_gemini(problem, claude_resp, self._gpt_resp, context=context)
-                    self._append(self._gemini_resp + "\n\n")
-                except Exception as e:
-                    self._gemini_resp = f"[ERROR] {e}"
-                    self._append(self._gemini_resp + "\n\n")
+        if resume_from is None or resume_from == "gemini":
+            if mode == "full":
+                if HAS_GEMINI:
+                    self._status("Gemini is auditing the exchange...")
+                    if resume_from == "gemini":
+                        self._append("\n[Retrying Gemini...]\n\n")
+                    self._append("GEMINI  (Auditor + Synthesis)\n" + "─" * 40 + "\n")
+                    try:
+                        self._gemini_resp = call_gemini(problem, claude_resp, self._gpt_resp, context=context)
+                        self._append(self._gemini_resp + "\n\n")
+                    except Exception as e:
+                        self._gemini_resp = f"[ERROR] {e}"
+                        self._append(self._gemini_resp + "\n\n")
+                        self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
+                        self._status("Gemini failed — pipeline paused. Click Retry when ready.")
+                        self._failed_phase = "gemini"
+                        self._show_retry()
+                        self.root.after(0, lambda: self.run_btn.configure(state="normal"))
+                        return  # HALT
+                else:
+                    self._gemini_resp = "[SKIPPED — no GOOGLE_API_KEY]"
+                    self._append("GEMINI  (Auditor)\n" + "─" * 40 + "\n" + self._gemini_resp + "\n\n")
             else:
-                self._gemini_resp = "[SKIPPED — no GOOGLE_API_KEY]"
-                self._append("GEMINI  (Auditor)\n" + "─" * 40 + "\n" + self._gemini_resp + "\n\n")
-        else:
-            self._gemini_resp = "(Review mode — no audit)"
+                self._gemini_resp = "(Review mode — no audit)"
 
         done_label = {"review": "Review", "full": "Full ARC"}
         self._status(f"{done_label.get(mode, 'ARC')} cycle complete.")
