@@ -124,6 +124,81 @@ def _with_context(text, context):
     return text
 
 
+def _detect_provider(model_name):
+    """Detect API provider from model name."""
+    if model_name.startswith("claude"):
+        return "anthropic"
+    elif model_name.startswith(("gpt", "o3", "o1")):
+        return "openai"
+    elif model_name.startswith("gemini"):
+        return "google"
+    return None
+
+
+def call_any(model_name, system_prompt, user_prompt):
+    """Call any supported model by name. Routes to the correct provider."""
+    provider = _detect_provider(model_name)
+
+    if provider == "anthropic":
+        if not HAS_CLAUDE_API:
+            return "[ERROR] No ANTHROPIC_API_KEY set"
+        client = anthropic.Anthropic()
+        msg = client.messages.create(
+            model=model_name, max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        return msg.content[0].text
+
+    elif provider == "openai":
+        if not HAS_GPT:
+            return "[ERROR] No OPENAI_API_KEY set"
+        client = openai.OpenAI()
+        resp = client.chat.completions.create(
+            model=model_name, max_tokens=4096,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+
+    elif provider == "google":
+        if not HAS_GEMINI:
+            return "[ERROR] No GOOGLE_API_KEY set"
+        m = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=system_prompt,
+        )
+        response = m.generate_content(user_prompt)
+        try:
+            return response.text
+        except ValueError:
+            reason = None
+            if response.candidates and response.candidates[0].finish_reason:
+                reason = response.candidates[0].finish_reason
+            if reason == 3:
+                return "[ERROR] Gemini safety filter blocked the response."
+            elif reason == 1:
+                return "[ERROR] Model glitch: empty response. Try again."
+            elif reason == 2:
+                return "[ERROR] Gemini hit max token limit."
+            else:
+                return f"[ERROR] Gemini returned no content. Finish reason: {reason}"
+
+    return f"[ERROR] Unknown provider for model: {model_name}"
+
+
+# All available models across all providers (for role assignment dropdowns)
+ALL_MODELS = []
+if HAS_CLAUDE_API:
+    ALL_MODELS.extend(CLAUDE_MODELS)
+if HAS_GPT:
+    ALL_MODELS.extend(GPT_MODELS)
+if HAS_GEMINI:
+    ALL_MODELS.extend(GEMINI_MODELS)
+
+
 def call_claude(problem, context="", model=None):
     client = anthropic.Anthropic()
     msg = client.messages.create(
@@ -330,46 +405,56 @@ class ARCApp:
             height=28, checkbox_width=18, checkbox_height=18)
         self.strict_check.pack(side="right", padx=(0, 4))
 
-        # --- Model selectors ---
-        model_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        model_frame.pack(fill="x", padx=12, pady=(4, 0))
+        # --- Role Assignment (which model plays which role) ---
+        role_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        role_frame.pack(fill="x", padx=12, pady=(4, 0))
 
-        ctk.CTkLabel(model_frame, text="Models:",
+        ctk.CTkLabel(role_frame, text="Roles:",
                      font=ctk.CTkFont(size=11),
-                     text_color="#888888").pack(side="left", padx=(4, 6))
+                     text_color="#888888").pack(side="left", padx=(4, 4))
 
-        # GPT model
-        ctk.CTkLabel(model_frame, text="GPT:",
-                     font=ctk.CTkFont(size=11),
-                     text_color="#666666").pack(side="left")
-        self.gpt_model_var = ctk.StringVar(value=DEFAULT_GPT_MODEL)
-        ctk.CTkComboBox(model_frame, variable=self.gpt_model_var,
-                        values=GPT_MODELS, width=120, height=24,
-                        font=ctk.CTkFont(size=10),
-                        state="readonly").pack(side="left", padx=(2, 10))
+        # Default role assignments
+        default_builder = DEFAULT_CLAUDE_MODEL if HAS_CLAUDE_API else (ALL_MODELS[0] if ALL_MODELS else "")
+        default_challenger = DEFAULT_GPT_MODEL if HAS_GPT else (ALL_MODELS[1] if len(ALL_MODELS) > 1 else "")
+        default_auditor = DEFAULT_GEMINI_MODEL if HAS_GEMINI else (ALL_MODELS[2] if len(ALL_MODELS) > 2 else "")
 
-        # Gemini model
-        ctk.CTkLabel(model_frame, text="Gemini:",
+        ctk.CTkLabel(role_frame, text="Builder:",
                      font=ctk.CTkFont(size=11),
                      text_color="#666666").pack(side="left")
-        self.gemini_model_var = ctk.StringVar(value=DEFAULT_GEMINI_MODEL)
-        ctk.CTkComboBox(model_frame, variable=self.gemini_model_var,
-                        values=GEMINI_MODELS, width=140, height=24,
+        self.builder_model_var = ctk.StringVar(value=default_builder)
+        ctk.CTkComboBox(role_frame, variable=self.builder_model_var,
+                        values=ALL_MODELS or ["(no API keys)"], width=155, height=24,
                         font=ctk.CTkFont(size=10),
-                        state="readonly").pack(side="left", padx=(2, 10))
+                        state="readonly").pack(side="left", padx=(2, 6))
 
-        # Claude model (only if API available)
-        if HAS_CLAUDE_API:
-            ctk.CTkLabel(model_frame, text="Claude:",
-                         font=ctk.CTkFont(size=11),
-                         text_color="#666666").pack(side="left")
-            self.claude_model_var = ctk.StringVar(value=DEFAULT_CLAUDE_MODEL)
-            ctk.CTkComboBox(model_frame, variable=self.claude_model_var,
-                            values=CLAUDE_MODELS, width=180, height=24,
-                            font=ctk.CTkFont(size=10),
-                            state="readonly").pack(side="left", padx=(2, 0))
-        else:
-            self.claude_model_var = ctk.StringVar(value=DEFAULT_CLAUDE_MODEL)
+        ctk.CTkLabel(role_frame, text="Challenger:",
+                     font=ctk.CTkFont(size=11),
+                     text_color="#666666").pack(side="left")
+        self.challenger_model_var = ctk.StringVar(value=default_challenger)
+        ctk.CTkComboBox(role_frame, variable=self.challenger_model_var,
+                        values=ALL_MODELS or ["(no API keys)"], width=120, height=24,
+                        font=ctk.CTkFont(size=10),
+                        state="readonly").pack(side="left", padx=(2, 6))
+
+        ctk.CTkLabel(role_frame, text="Auditor:",
+                     font=ctk.CTkFont(size=11),
+                     text_color="#666666").pack(side="left")
+        self.auditor_model_var = ctk.StringVar(value=default_auditor)
+        ctk.CTkComboBox(role_frame, variable=self.auditor_model_var,
+                        values=ALL_MODELS or ["(no API keys)"], width=140, height=24,
+                        font=ctk.CTkFont(size=10),
+                        state="readonly").pack(side="left", padx=(2, 6))
+
+        # Shuffle button
+        ctk.CTkButton(role_frame, text="🔀", width=30, height=24,
+                       font=ctk.CTkFont(size=14),
+                       fg_color="transparent", hover_color="#333333",
+                       command=self._shuffle_roles).pack(side="left", padx=(2, 0))
+
+        # Backward compat aliases
+        self.gpt_model_var = self.challenger_model_var
+        self.gemini_model_var = self.auditor_model_var
+        self.claude_model_var = self.builder_model_var
 
         # --- Top: Problem input ---
         prob_frame = ctk.CTkFrame(self.root)
@@ -487,12 +572,27 @@ class ARCApp:
     def _on_mode_change(self, *args):
         """Update mode description label."""
         mode = self.mode_var.get()
+        b = self.builder_model_var.get().split("-")[0].capitalize()
+        c = self.challenger_model_var.get().split("-")[0].capitalize()
+        a = self.auditor_model_var.get().split("-")[0].capitalize()
         descriptions = {
-            "fast": "Claude only (paste response, done)",
-            "review": "Claude → GPT (review, no audit)",
-            "full": "Claude → GPT → Gemini (full ARC)",
+            "fast": f"{b} only (paste response, done)",
+            "review": f"{b} → {c} (review, no audit)",
+            "full": f"{b} → {c} → {a} (full ARC)",
         }
         self._mode_desc.set(descriptions.get(mode, ""))
+
+    def _shuffle_roles(self):
+        """Randomly shuffle which model plays which role."""
+        import random
+        models = [self.builder_model_var.get(),
+                  self.challenger_model_var.get(),
+                  self.auditor_model_var.get()]
+        random.shuffle(models)
+        self.builder_model_var.set(models[0])
+        self.challenger_model_var.set(models[1])
+        self.auditor_model_var.set(models[2])
+        self._on_mode_change()  # refresh description
 
     def _get_gpt_prompt(self):
         """Return GPT's system prompt, with strict mode variant if enabled."""
@@ -642,61 +742,66 @@ class ARCApp:
     def _pipeline_worker(self, problem, claude_resp, context, mode, resume_from=None):
         sep = "\n" + "━" * 60 + "\n\n"
         strict = self.strict_var.get()
-        gpt_system = self._get_gpt_prompt()
+        challenger_system = self._get_gpt_prompt()
+        challenger_model = self.challenger_model_var.get()
+        auditor_model = self.auditor_model_var.get()
 
         # Store args for potential retry
         self._pipeline_args = (problem, claude_resp, context, mode)
 
-        # --- GPT Review ---
+        # --- Challenger Review ---
         if resume_from is None or resume_from == "gpt":
-            if HAS_GPT:
-                role_label = "Adversary" if strict else "Reviewer / Devil's Advocate"
-                self._status(f"GPT is {'attacking' if strict else 'reviewing'} Claude's solution...")
-                if resume_from == "gpt":
-                    self._append("\n[Retrying GPT...]\n\n")
-                self._append(f"GPT  ({role_label})\n" + "─" * 40 + "\n")
-                try:
-                    self._gpt_resp = call_gpt(problem, claude_resp,
-                                               context=context, system_prompt=gpt_system,
-                                               model=self.gpt_model_var.get())
-                    self._append(self._gpt_resp + sep)
-                except Exception as e:
-                    self._gpt_resp = f"[ERROR] {e}"
-                    self._append(self._gpt_resp + "\n\n")
-                    self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
-                    self._status("GPT failed — pipeline paused. Click Retry when ready.")
-                    self._failed_phase = "gpt"
-                    self._show_retry()
-                    self.root.after(0, lambda: self.run_btn.configure(state="normal"))
-                    return  # HALT — do not continue to Gemini
-            else:
-                self._gpt_resp = "[SKIPPED — no OPENAI_API_KEY]"
-                self._append("GPT  (Reviewer)\n" + "─" * 40 + "\n" + self._gpt_resp + sep)
+            role_label = "Adversary" if strict else "Challenger"
+            self._status(f"{challenger_model} is {'attacking' if strict else 'reviewing'}...")
+            if resume_from == "gpt":
+                self._append("\n[Retrying Challenger...]\n\n")
+            self._append(f"{challenger_model}  ({role_label})\n" + "─" * 40 + "\n")
+            try:
+                challenger_prompt = _with_context(
+                    f"ORIGINAL PROBLEM:\n{problem}\n\n"
+                    f"BUILDER'S PROPOSED SOLUTION:\n{claude_resp}\n\n"
+                    f"Please review this solution.",
+                    context)
+                self._gpt_resp = call_any(challenger_model, challenger_system,
+                                           challenger_prompt)
+                self._append(self._gpt_resp + sep)
+            except Exception as e:
+                self._gpt_resp = f"[ERROR] {e}"
+                self._append(self._gpt_resp + "\n\n")
+                self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
+                self._status("Challenger failed — pipeline paused. Click Retry when ready.")
+                self._failed_phase = "gpt"
+                self._show_retry()
+                self.root.after(0, lambda: self.run_btn.configure(state="normal"))
+                return
 
-        # --- Gemini Audit (only in full mode) ---
+        # --- Auditor (only in full mode) ---
         if resume_from is None or resume_from == "gemini":
             if mode == "full":
-                if HAS_GEMINI:
-                    self._status("Gemini is auditing the exchange...")
-                    if resume_from == "gemini":
-                        self._append("\n[Retrying Gemini...]\n\n")
-                    self._append("GEMINI  (Auditor + Synthesis)\n" + "─" * 40 + "\n")
-                    try:
-                        self._gemini_resp = call_gemini(problem, claude_resp, self._gpt_resp,
-                                                        context=context, model=self.gemini_model_var.get())
-                        self._append(self._gemini_resp + "\n\n")
-                    except Exception as e:
-                        self._gemini_resp = f"[ERROR] {e}"
-                        self._append(self._gemini_resp + "\n\n")
-                        self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
-                        self._status("Gemini failed — pipeline paused. Click Retry when ready.")
-                        self._failed_phase = "gemini"
-                        self._show_retry()
-                        self.root.after(0, lambda: self.run_btn.configure(state="normal"))
-                        return  # HALT
-                else:
-                    self._gemini_resp = "[SKIPPED — no GOOGLE_API_KEY]"
-                    self._append("GEMINI  (Auditor)\n" + "─" * 40 + "\n" + self._gemini_resp + "\n\n")
+                self._status(f"{auditor_model} is auditing the exchange...")
+                if resume_from == "gemini":
+                    self._append("\n[Retrying Auditor...]\n\n")
+                self._append(f"{auditor_model}  (Auditor + Synthesis)\n" + "─" * 40 + "\n")
+                try:
+                    auditor_prompt = _with_context(
+                        f"ORIGINAL PROBLEM:\n{problem}\n\n"
+                        f"BUILDER'S PROPOSED SOLUTION:\n{claude_resp}\n\n"
+                        f"CHALLENGER'S REVIEW:\n{self._gpt_resp}\n\n"
+                        f"Please audit this exchange.",
+                        context)
+                    self._gemini_resp = call_any(auditor_model,
+                                                 SYSTEM_PROMPTS['gemini'],
+                                                 auditor_prompt)
+                    self._append(self._gemini_resp + "\n\n")
+                except Exception as e:
+                    self._gemini_resp = f"[ERROR] {e}"
+                    self._append(self._gemini_resp + "\n\n")
+                    self._append("⚠ Pipeline paused. Fix the issue and click Retry.\n")
+                    self._status("Auditor failed — pipeline paused. Click Retry when ready.")
+                    self._failed_phase = "gemini"
+                    self._show_retry()
+                    self.root.after(0, lambda: self.run_btn.configure(state="normal"))
+                    return  # HALT
             else:
                 self._gemini_resp = "(Review mode — no audit)"
 
