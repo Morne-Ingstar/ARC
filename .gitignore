@@ -12,6 +12,12 @@ prism.py
 # Saved exchanges (personal data)
 exchanges/
 
+# Exported prompts
+exports/
+
+# User preferences
+arc_config.json
+
 # IDE
 .idea/
 .vscode/

@@ -8,6 +8,7 @@ Two modes:
 GPT and Gemini always use APIs.
 """
 
+import json
 import os
 import threading
 from datetime import datetime
@@ -53,6 +54,38 @@ MODEL_REGISTRY = {
     "gemini-2.5-pro": "google",
     "gemini-3-flash": "google",
 }
+
+CONFIG_PATH = Path(__file__).parent / 'arc_config.json'
+
+
+def load_config():
+    """Load saved preferences from arc_config.json."""
+    defaults = {
+        'mode': 'full',
+        'strict_mode': False,
+        'builder_model': DEFAULT_CLAUDE_MODEL,
+        'challenger_model': DEFAULT_GPT_MODEL,
+        'auditor_model': DEFAULT_GEMINI_MODEL,
+        'project_context': '',
+    }
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, encoding='utf-8') as f:
+                saved = json.load(f)
+            defaults.update(saved)
+        except Exception:
+            pass  # corrupted config — use defaults
+    return defaults
+
+
+def save_config(config):
+    """Save preferences to arc_config.json."""
+    try:
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        print(f"[ARC] Failed to save config: {e}")
+
 
 # --- API availability ---
 
@@ -281,6 +314,10 @@ class ARCApp:
         self.root.title("ARC")
         self.root.geometry("950x820")
         self.root.minsize(750, 600)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Load saved preferences
+        self._config = load_config()
 
         self._gpt_resp = ""
         self._gemini_resp = ""
@@ -305,7 +342,9 @@ class ARCApp:
         self.context_box = ctk.CTkTextbox(self.ctx_frame, height=50,
                                            font=ctk.CTkFont(size=12))
         self.context_box.pack(fill="x", padx=8, pady=(2, 6))
-        self.context_box.insert("1.0", "")
+        saved_context = self._config.get('project_context', '')
+        if saved_context:
+            self.context_box.insert("1.0", saved_context)
         self.context_box.configure(
             text_color="#666666")
 
@@ -317,7 +356,7 @@ class ARCApp:
                      font=ctk.CTkFont(size=12),
                      text_color="#888888").pack(side="left", padx=(4, 6))
 
-        self.mode_var = ctk.StringVar(value="full")
+        self.mode_var = ctk.StringVar(value=self._config.get('mode', 'full'))
         self.mode_selector = ctk.CTkSegmentedButton(
             mode_frame,
             values=["fast", "review", "full"],
@@ -337,7 +376,7 @@ class ARCApp:
         self.mode_var.trace_add("write", self._on_mode_change)
 
         # Strict mode toggle (forces GPT to argue against Claude)
-        self.strict_var = ctk.BooleanVar(value=False)
+        self.strict_var = ctk.BooleanVar(value=self._config.get('strict_mode', False))
         self.strict_check = ctk.CTkCheckBox(
             mode_frame, text="Strict Mode",
             variable=self.strict_var,
@@ -345,48 +384,54 @@ class ARCApp:
             height=28, checkbox_width=18, checkbox_height=18)
         self.strict_check.pack(side="right", padx=(0, 4))
 
-        # --- Role Assignment (which model plays which role) ---
-        role_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        role_frame.pack(fill="x", padx=12, pady=(4, 0))
+        # --- Role Assignment (collapsible) ---
+        self._roles_visible = False
+        role_toggle_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        role_toggle_frame.pack(fill="x", padx=12, pady=(4, 0))
+        self.role_toggle_btn = ctk.CTkButton(
+            role_toggle_frame, text="▶ Model Routing",
+            command=self._toggle_roles, width=150, height=24,
+            font=ctk.CTkFont(size=11), fg_color="transparent",
+            text_color="#888888", hover_color="#333333", anchor="w")
+        self.role_toggle_btn.pack(side="left")
 
-        ctk.CTkLabel(role_frame, text="Roles:",
-                     font=ctk.CTkFont(size=11),
-                     text_color="#888888").pack(side="left", padx=(4, 4))
+        self.role_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        # Start hidden — don't pack yet
 
-        # Default role assignments
-        default_builder = DEFAULT_CLAUDE_MODEL if HAS_CLAUDE_API else (ALL_MODELS[0] if ALL_MODELS else "")
-        default_challenger = DEFAULT_GPT_MODEL if HAS_GPT else (ALL_MODELS[1] if len(ALL_MODELS) > 1 else "")
-        default_auditor = DEFAULT_GEMINI_MODEL if HAS_GEMINI else (ALL_MODELS[2] if len(ALL_MODELS) > 2 else "")
+        # Default role assignments (from config or fallback)
+        default_builder = self._config.get('builder_model', DEFAULT_CLAUDE_MODEL)
+        default_challenger = self._config.get('challenger_model', DEFAULT_GPT_MODEL)
+        default_auditor = self._config.get('auditor_model', DEFAULT_GEMINI_MODEL)
 
-        ctk.CTkLabel(role_frame, text="Builder:",
+        ctk.CTkLabel(self.role_frame, text="Builder:",
                      font=ctk.CTkFont(size=11),
                      text_color="#666666").pack(side="left")
         self.builder_model_var = ctk.StringVar(value=default_builder)
-        ctk.CTkComboBox(role_frame, variable=self.builder_model_var,
+        ctk.CTkComboBox(self.role_frame, variable=self.builder_model_var,
                         values=ALL_MODELS or ["(no API keys)"], width=155, height=24,
                         font=ctk.CTkFont(size=10),
                         state="readonly").pack(side="left", padx=(2, 6))
 
-        ctk.CTkLabel(role_frame, text="Challenger:",
+        ctk.CTkLabel(self.role_frame, text="Challenger:",
                      font=ctk.CTkFont(size=11),
                      text_color="#666666").pack(side="left")
         self.challenger_model_var = ctk.StringVar(value=default_challenger)
-        ctk.CTkComboBox(role_frame, variable=self.challenger_model_var,
+        ctk.CTkComboBox(self.role_frame, variable=self.challenger_model_var,
                         values=ALL_MODELS or ["(no API keys)"], width=120, height=24,
                         font=ctk.CTkFont(size=10),
                         state="readonly").pack(side="left", padx=(2, 6))
 
-        ctk.CTkLabel(role_frame, text="Auditor:",
+        ctk.CTkLabel(self.role_frame, text="Auditor:",
                      font=ctk.CTkFont(size=11),
                      text_color="#666666").pack(side="left")
         self.auditor_model_var = ctk.StringVar(value=default_auditor)
-        ctk.CTkComboBox(role_frame, variable=self.auditor_model_var,
+        ctk.CTkComboBox(self.role_frame, variable=self.auditor_model_var,
                         values=ALL_MODELS or ["(no API keys)"], width=140, height=24,
                         font=ctk.CTkFont(size=10),
                         state="readonly").pack(side="left", padx=(2, 6))
 
         # Shuffle button
-        ctk.CTkButton(role_frame, text="🔀", width=30, height=24,
+        ctk.CTkButton(self.role_frame, text="🔀", width=30, height=24,
                        font=ctk.CTkFont(size=14),
                        fg_color="transparent", hover_color="#333333",
                        command=self._shuffle_roles).pack(side="left", padx=(2, 0))
@@ -559,12 +604,23 @@ class ARCApp:
             self.ctx_toggle_btn.configure(text="▶ Project Context (optional)")
             self._context_visible = False
         else:
-            # Pack it right after the toggle button, before the problem frame
             self.ctx_frame.pack(fill="x", padx=12, pady=(2, 0),
                                 after=self.ctx_toggle_btn.master)
             self.ctx_toggle_btn.configure(text="▼ Project Context (optional)")
             self._context_visible = True
             self.context_box.focus()
+
+    def _toggle_roles(self):
+        """Show/hide the Model Routing panel."""
+        if self._roles_visible:
+            self.role_frame.pack_forget()
+            self.role_toggle_btn.configure(text="▶ Model Routing")
+            self._roles_visible = False
+        else:
+            self.role_frame.pack(fill="x", padx=12, pady=(2, 0),
+                                 after=self.role_toggle_btn.master)
+            self.role_toggle_btn.configure(text="▼ Model Routing")
+            self._roles_visible = True
 
     def _get_context(self):
         """Return project context text, or empty string if none."""
@@ -888,6 +944,23 @@ class ARCApp:
             self._status(f"Prompt exported to {fp} and copied to clipboard")
         except Exception:
             self._status(f"Prompt exported to {fp}")
+
+    def _save_preferences(self):
+        """Save current UI state to config file."""
+        config = {
+            'mode': self.mode_var.get(),
+            'strict_mode': self.strict_var.get(),
+            'builder_model': self.builder_model_var.get(),
+            'challenger_model': self.challenger_model_var.get(),
+            'auditor_model': self.auditor_model_var.get(),
+            'project_context': self._get_context(),
+        }
+        save_config(config)
+
+    def _on_close(self):
+        """Save preferences and close the app."""
+        self._save_preferences()
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
