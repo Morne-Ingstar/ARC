@@ -48,25 +48,35 @@ automates — produced the feature roadmap:
 
 Every feature that followed was designed through this same process.
 
-### ARC Builds ARC
+### ARC in the Field (Samsara Development)
 
-The tool was then used to solve problems in its own development:
+ARC was immediately put to work on real problems in
+[Samsara](https://github.com/Morne-Ingstar/Samsara), the voice dictation
+app that inspired it:
 
-- **Echo cancellation bug** — Claude proposed an NLMS filter, GPT
-  reviewed it, Gemini's audit caught that Claude had hallucinated the
-  cause of a Gemini API error (claiming "safety filter" when the actual
-  finish_reason was STOP). The fix was applied based on Gemini's correct
-  diagnosis.
-- **Speech threshold calibration** — Claude proposed auto-calibration
-  with a 0.01 floor. Gemini's audit caught that 0.01 was the exact value
-  that caused the original bug. The floor was dropped to 0.0005 based on
-  the audit. Without the third perspective, the fix would have
+- **Echo cancellation** — Claude proposed an NLMS filter. After a Gemini
+  API error, Claude confidently diagnosed "safety filter" as the cause.
+  Gemini's audit corrected this — the finish_reason was STOP (1), not
+  SAFETY (3). Claude had hallucinated the diagnosis. The fix was applied
+  based on Gemini's correct reading of the API enum.
+- **Speech threshold** — Claude proposed auto-calibration with a 0.01
+  floor. Gemini's audit caught that 0.01 was the exact value that caused
+  the original bug. Without the third perspective, the fix would have
   reintroduced the problem it was designed to solve.
-- **Settings UI review** — The full settings menu was submitted to
-  GPT and Gemini. GPT recommended simplification. Gemini pushed back on
-  specific cuts (defending "pause" as an accessibility feature, defending
-  alarms as hands-free utility). The resulting 4-state machine was better
-  than either AI's individual recommendation.
+- **Settings UI** — GPT recommended deleting the "pause" feature. Gemini
+  pushed back: for a user with chronic hand pain, pausing mid-dictation
+  without losing context is an accessibility lifeline, not a UX mess.
+  The resulting 4-state machine was better than either AI's recommendation.
+
+### ARC Reviews ARC
+
+The tool was also submitted to its own process for a full code and
+architecture review. GPT and Gemini independently identified the same
+issues (brittle prefix-based routing, dead code, UI clutter, missing
+persistent config) and disagreed on others (GPT rated Strict Mode high,
+Gemini rated convergence higher). The resulting cleanup removed 60 lines
+of dead code while adding persistent config and collapsible UI — changes
+neither reviewer would have prioritized identically on their own.
 
 ### The Polished Product (975 lines)
 
