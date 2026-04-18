@@ -128,7 +128,7 @@ def call_gpt(problem, claude_response, context="", system_prompt=None):
 
 def call_gemini(problem, claude_response, gpt_response, context=""):
     model = genai.GenerativeModel(
-        model_name="gemini-3-flash",
+        model_name="gemini-2.5-flash",
         system_instruction=SYSTEM_PROMPTS['gemini'],
     )
     prompt = _with_context(
@@ -137,7 +137,20 @@ def call_gemini(problem, claude_response, gpt_response, context=""):
         f"GPT'S REVIEW:\n{gpt_response}\n\n"
         f"Please audit this exchange.",
         context)
-    return model.generate_content(prompt).text
+    response = model.generate_content(prompt)
+
+    # Handle empty/blocked responses gracefully
+    try:
+        return response.text
+    except ValueError:
+        # response.text throws ValueError if no valid parts
+        # Check if safety filters blocked it
+        if response.candidates and response.candidates[0].finish_reason:
+            reason = response.candidates[0].finish_reason
+            return (f"[Gemini returned no content. Finish reason: {reason}. "
+                    f"This may be a safety filter issue. Try rephrasing the problem "
+                    f"or reducing adversarial language in the input.]")
+        return "[Gemini returned an empty response. Try again.]"
 
 
 def save_exchange(problem, claude_resp, gpt_resp, gemini_resp, context=""):
