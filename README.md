@@ -205,7 +205,7 @@ chains the outputs sequentially.
 MIT License — free for personal and commercial use.
 
 If ARC's adversarial review process has improved your code, consider
-[supporting the project](https://morneis.com) — built to make AI
+[supporting the project](https://ko-fi.com/morneingstar) — built to make AI
 collaboration smarter, kept free for the community.
 
 ## Acknowledgments
