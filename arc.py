@@ -57,6 +57,9 @@ MODEL_REGISTRY = {
 
 CONFIG_PATH = Path(__file__).parent / 'arc_config.json'
 
+# Quick Ask IPC: Samsara writes payloads here, ARC polls every second.
+_ARC_INBOX = Path.home() / ".arc_inbox.json"
+
 
 def load_config():
     """Load saved preferences from arc_config.json."""
@@ -574,6 +577,9 @@ class ARCApp:
         ctk.CTkLabel(self.root, textvariable=self.status_var,
                       font=ctk.CTkFont(size=11),
                       text_color="#888888", anchor="w").pack(fill="x", padx=14, pady=(0, 8))
+
+        # Kick off the Quick Ask inbox poller -- once per second on the main loop.
+        self.root.after(1000, self._check_inbox)
 
     # --- Helpers ---
 
@@ -1173,6 +1179,73 @@ class ARCApp:
         self._status("Reverted -- codebase restored.")
         self._pipeline = None
         self._hide_pipeline_buttons()
+
+    # --- Quick Ask inbox (IPC from Samsara) ---
+
+    # Short spoken aliases -> full model IDs the API calls expect.
+    # Without this, call_any("claude", ...) would hit the anthropic API
+    # with literal model="claude" and 404.
+    _QUICK_ASK_ALIASES = {
+        'claude': DEFAULT_CLAUDE_MODEL,
+        'gpt': DEFAULT_GPT_MODEL,
+        'gemini': DEFAULT_GEMINI_MODEL,
+    }
+
+    def _check_inbox(self):
+        """Poll the shared inbox file every 1 second for Quick Ask payloads."""
+        try:
+            if _ARC_INBOX.exists():
+                with open(_ARC_INBOX, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+
+                # Delete immediately so we don't read it twice.
+                _ARC_INBOX.unlink(missing_ok=True)
+
+                msg_type = payload.get("type", "")
+                if msg_type == "quick_ask":
+                    threading.Thread(
+                        target=self._handle_quick_ask,
+                        args=(payload,),
+                        daemon=True,
+                    ).start()
+        except json.JSONDecodeError:
+            # File being written at this exact moment -- catch next poll.
+            pass
+        except Exception as e:
+            print(f"[INBOX] Error: {e}")
+
+        # Re-queue -- runs every 1 second.
+        self.root.after(1000, self._check_inbox)
+
+    def _handle_quick_ask(self, payload):
+        """Process a Quick Ask and display the result in the output panel."""
+        model_alias = payload.get("model", "claude")
+        question = payload.get("question", "")
+
+        if not question:
+            return
+
+        resolved_model = self._QUICK_ASK_ALIASES.get(model_alias.lower(), model_alias)
+
+        sep = "\n" + "\u2501" * 60 + "\n\n"
+        self._append(sep)
+        self._append(f"\U0001f3a4 QUICK ASK ({model_alias.upper()} -> {resolved_model})\n")
+        self._append(f"{question}\n\n")
+        self._status(f"Quick Ask: waiting for {model_alias}...")
+
+        system_prompt = (
+            "You are a concise technical assistant. Give a direct, "
+            "helpful answer. No preamble, no fluff. If code is needed, "
+            "include it. Keep answers short unless the question demands depth."
+        )
+
+        try:
+            response = call_any(resolved_model, system_prompt, question)
+            self._append(response + "\n\n")
+            self._status("Quick Ask complete.")
+        except Exception as e:
+            self._append(f"Error: {e}\n\n")
+            self._status(f"Quick Ask failed: {e}")
 
     def _save_preferences(self):
         """Save current UI state to config file."""
