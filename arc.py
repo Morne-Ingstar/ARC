@@ -67,6 +67,7 @@ def load_config():
         'challenger_model': DEFAULT_GPT_MODEL,
         'auditor_model': DEFAULT_GEMINI_MODEL,
         'project_context': '',
+        'project_dir': '',
     }
     if CONFIG_PATH.exists():
         try:
@@ -348,6 +349,18 @@ class ARCApp:
         self.context_box.configure(
             text_color="#666666")
 
+        # Project dir row -- target repo for JARVIS pipeline
+        ctx_dir_row = ctk.CTkFrame(self.ctx_frame, fg_color="transparent")
+        ctx_dir_row.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(ctx_dir_row, text="Project dir:",
+                     font=ctk.CTkFont(size=11),
+                     text_color="#666666").pack(side="left")
+        self.project_dir_var = ctk.StringVar(
+            value=self._config.get('project_dir', ''))
+        ctk.CTkEntry(ctx_dir_row, textvariable=self.project_dir_var,
+                     width=400, font=ctk.CTkFont(size=11)).pack(
+                         side="left", padx=(6, 0))
+
         # --- Mode selector + Strict Mode ---
         mode_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         mode_frame.pack(fill="x", padx=12, pady=(8, 0))
@@ -516,6 +529,16 @@ class ARCApp:
             fg_color="#27AE60", hover_color="#1E8449",
             state="disabled")
         self.export_btn.pack(side="left", padx=(8, 0))
+
+        # Execute (JARVIS pipeline)
+        self.execute_btn = ctk.CTkButton(
+            btn_frame, text="\u26A1 Execute",
+            command=self._on_execute,
+            font=ctk.CTkFont(size=13),
+            width=120, height=34,
+            fg_color="#8E44AD", hover_color="#6C3483",
+            state="disabled")
+        self.execute_btn.pack(side="left", padx=(8, 0))
 
         # Retry button (hidden until an API call fails)
         self.retry_btn = ctk.CTkButton(btn_frame, text="Retry",
@@ -733,6 +756,7 @@ class ARCApp:
         self.save_btn.configure(state="disabled")
         self.converge_btn.configure(state="disabled")
         self.export_btn.configure(state="disabled")
+        self.execute_btn.configure(state="disabled")
         self._is_running = True
 
         threading.Thread(target=self._pipeline_worker,
@@ -813,9 +837,10 @@ class ARCApp:
         self.root.after(0, lambda: self.run_btn.configure(state="normal"))
         self.root.after(0, lambda: self.save_btn.configure(state="normal"))
         self.root.after(0, lambda: self.export_btn.configure(state="normal"))
-        # Enable convergence if full mode completed with all three responses
+        # Enable convergence + Execute if full mode completed with a real audit
         if mode == "full" and not self._gemini_resp.startswith("["):
             self.root.after(0, lambda: self.converge_btn.configure(state="normal"))
+            self.root.after(0, lambda: self.execute_btn.configure(state="normal"))
 
     def _on_converge(self):
         """Send auditor's findings back to builder and challenger for agree/disagree."""
@@ -945,6 +970,210 @@ class ARCApp:
         except Exception:
             self._status(f"Prompt exported to {fp}")
 
+    # --- JARVIS execute pipeline ---
+
+    def _on_execute(self):
+        """Run the full JARVIS pipeline."""
+        if self._is_running:
+            return
+        if not hasattr(self, '_gemini_resp') or not self._gemini_resp:
+            self._status("Run a Full ARC cycle first.")
+            return
+        project_dir = self.project_dir_var.get().strip()
+        if not project_dir or not os.path.isdir(project_dir):
+            self._status("Set a valid project directory in Project Context.")
+            return
+
+        self._is_running = True
+        self.execute_btn.configure(state="disabled")
+        self.run_btn.configure(state="disabled")
+        self._status("\u26A1 JARVIS Pipeline starting...")
+
+        threading.Thread(target=self._execute_worker,
+                         args=(project_dir,), daemon=True).start()
+
+    def _execute_worker(self, project_dir):
+        from pipeline import JarvisPipeline
+
+        sep = "\n" + "\u2501" * 60 + "\n\n"
+        pipeline = JarvisPipeline(project_dir)
+
+        def _reenable():
+            self._is_running = False
+            self.root.after(0, lambda: self.run_btn.configure(state="normal"))
+            self.root.after(0, lambda: self.execute_btn.configure(state="normal"))
+
+        try:
+            # CRITICAL: Check for dirty working tree BEFORE doing anything
+            clean, msg = pipeline.check_clean_tree()
+            if not clean:
+                self._append(sep)
+                self._append(f"\u26A0 PIPELINE ABORTED\n{msg}\n")
+                self._status("Pipeline aborted: uncommitted changes. Commit or stash first.")
+                _reenable()
+                return
+
+            # Step 1: Generate prompt
+            self._append(sep)
+            self._append("\u26A1 JARVIS PIPELINE\n" + "\u2500" * 40 + "\n\n")
+            self._status("Generating Claude Code prompt...")
+
+            prompt = pipeline.generate_prompt(self._problem, self._gemini_resp)
+            self._append(f"Generated prompt ({len(prompt)} chars)\n\n")
+
+            # Step 2: Create branch
+            self._status("Creating isolated branch...")
+            slug = self._problem[:30].strip()
+            branch = pipeline.create_branch(slug)
+            if branch:
+                self._append(f"Branch: {branch}\n\n")
+            else:
+                self._append("Warning: Could not create branch\n\n")
+
+            # Step 3: Execute Claude Code
+            self._status("\u26A1 Claude Code is implementing changes...")
+            success, output = pipeline.execute(prompt, budget_usd=1.0)
+
+            if not success:
+                self._append(f"Claude Code FAILED:\n{output}\n\n")
+                self._status("Pipeline failed at execution step.")
+                pipeline.revert()
+                _reenable()
+                return
+
+            self._append("Claude Code finished.\n\n")
+
+            # Step 4: Capture diff
+            self._status("Capturing changes...")
+            diff_stat, diff_full = pipeline.get_diff()
+
+            if not diff_stat.strip():
+                self._append("No files were changed.\n\n")
+                pipeline.revert()
+                self._status("No changes made. Branch cleaned up.")
+                _reenable()
+                return
+
+            self._append(f"Changes:\n{diff_stat}\n")
+
+            # Step 5: Run tests
+            self._status("Running tests...")
+            tests_passed, test_output = pipeline.run_tests()
+            if tests_passed is True:
+                self._append("Tests: PASSED \u2713\n\n")
+            elif tests_passed is False:
+                last_lines = test_output.strip().split('\n')[-5:]
+                self._append(f"Tests: FAILED \u2717\n{chr(10).join(last_lines)}\n\n")
+            else:
+                self._append("Tests: could not run\n\n")
+
+            # Step 6: Confidence check
+            self._status("Auditor is rating the changes...")
+            auditor_model = self.auditor_model_var.get()
+
+            confidence_prompt = (
+                "You are reviewing code changes that were ACTUALLY IMPLEMENTED "
+                "based on your earlier recommendation.\n\n"
+                f"ORIGINAL PROBLEM:\n{self._problem}\n\n"
+                f"YOUR RECOMMENDATION (what should have been done):\n"
+                f"{self._gemini_resp[:3000]}\n\n"
+                f"GIT DIFF (what was actually changed):\n"
+                f"{diff_full[:5000]}\n\n"
+                f"TEST RESULTS:\n"
+                f"{'PASSED' if tests_passed else 'FAILED or not run'}\n"
+                f"{test_output[:500] if test_output else 'N/A'}\n\n"
+                "Rate your confidence: HIGH / MEDIUM / LOW\n"
+                "- HIGH: Changes match your recommendation, tests pass\n"
+                "- MEDIUM: Mostly correct but has gaps or minor issues\n"
+                "- LOW: Significant deviation or test failures\n\n"
+                "Be specific: what was done well, what concerns you, "
+                "and your final rating."
+            )
+
+            confidence_system = (
+                "You are a QA auditor reviewing actual code changes against "
+                "a plan you previously approved. Verify the implementation "
+                "matches the intent. Be precise and direct."
+            )
+
+            confidence_resp = call_any(auditor_model, confidence_system,
+                                       confidence_prompt)
+            self._append("CONFIDENCE RATING\n" + "\u2500" * 40 + "\n")
+            self._append(confidence_resp + "\n\n")
+
+            # Step 7: Show confirm/revert
+            self._append("\u2500" * 60 + "\n")
+            self._append("ACTION REQUIRED:\n")
+            self._append("Click COMMIT to keep changes, or REVERT to undo.\n\n")
+
+            self._pipeline = pipeline
+            self.root.after(0, self._show_pipeline_buttons)
+            self._status("Review changes, then Commit or Revert.")
+            # Leave execute_btn disabled until commit/revert resolves;
+            # re-enable run_btn so the user can start new cycles.
+            self._is_running = False
+            self.root.after(0, lambda: self.run_btn.configure(state="normal"))
+
+        except Exception as e:
+            self._append(f"\n[ERROR] Pipeline failed: {e}\n\n")
+            import traceback
+            self._append(traceback.format_exc())
+            self._status(f"Pipeline error: {e}")
+            try:
+                pipeline.revert()
+            except Exception:
+                pass
+            _reenable()
+
+    def _show_pipeline_buttons(self):
+        self.execute_btn.configure(state="disabled")
+        if not hasattr(self, '_commit_btn'):
+            self._commit_btn = ctk.CTkButton(
+                self.execute_btn.master, text="\u2713 Commit",
+                command=self._on_pipeline_commit,
+                font=ctk.CTkFont(size=13),
+                width=100, height=34,
+                fg_color="#27AE60", hover_color="#1E8449")
+        if not hasattr(self, '_revert_btn'):
+            self._revert_btn = ctk.CTkButton(
+                self.execute_btn.master, text="\u2717 Revert",
+                command=self._on_pipeline_revert,
+                font=ctk.CTkFont(size=13),
+                width=100, height=34,
+                fg_color="#C0392B", hover_color="#E74C3C")
+        self._commit_btn.pack(side="left", padx=(8, 0))
+        self._revert_btn.pack(side="left", padx=(4, 0))
+
+    def _hide_pipeline_buttons(self):
+        if hasattr(self, '_commit_btn'):
+            self._commit_btn.pack_forget()
+        if hasattr(self, '_revert_btn'):
+            self._revert_btn.pack_forget()
+        self.execute_btn.configure(state="normal")
+
+    def _on_pipeline_commit(self):
+        if not hasattr(self, '_pipeline') or not self._pipeline:
+            return
+        slug = self._problem[:50].strip()
+        message = f"jarvis: {slug}"
+        success = self._pipeline.commit(message)
+        if success:
+            self._append(f"Committed: {message}\n")
+            self._status(f"Changes committed on {self._pipeline.branch_name}")
+        else:
+            self._append("Commit failed.\n")
+        self._pipeline = None
+        self._hide_pipeline_buttons()
+
+    def _on_pipeline_revert(self):
+        if not hasattr(self, '_pipeline') or not self._pipeline:
+            return
+        self._pipeline.revert()
+        self._append("All changes reverted. Branch deleted.\n")
+        self._status("Reverted -- codebase restored.")
+        self._pipeline = None
+        self._hide_pipeline_buttons()
+
     def _save_preferences(self):
         """Save current UI state to config file."""
         config = {
@@ -954,6 +1183,7 @@ class ARCApp:
             'challenger_model': self.challenger_model_var.get(),
             'auditor_model': self.auditor_model_var.get(),
             'project_context': self._get_context(),
+            'project_dir': self.project_dir_var.get(),
         }
         save_config(config)
 
