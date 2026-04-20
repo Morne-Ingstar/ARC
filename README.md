@@ -79,6 +79,19 @@ accessibility app"). Persists across sessions.
 **Prompt Export** — Generates a ready-to-use implementation prompt from
 cycle results. Copies to clipboard + saves to `exports/`.
 
+**JARVIS Pipeline** — One click turns the Auditor's recommendation into
+executed code. Creates an isolated `jarvis/*` git branch, pipes the
+recommendation to Claude Code CLI (`--allowed-tools "Read Edit"` — no
+shell access), captures the diff, runs tests, sends the diff back to the
+Auditor for a confidence rating (HIGH/MEDIUM/LOW), then shows Commit/Revert
+buttons. Safety: refuses to run on dirty git tree, 5-minute timeout,
+branch isolation, $1 budget cap.
+
+**Quick Ask IPC** — Samsara voice integration. Say "Jarvis, ask Claude
+why is my dict throwing a KeyError" and the question arrives in ARC's
+output panel with a direct answer. Uses a shared JSON inbox file for
+zero-dependency inter-process communication.
+
 **Persistent Config** — Model selections, strict mode, project context
 saved automatically. Everything persists across sessions.
 
@@ -150,11 +163,10 @@ and Gemini independently identified the same issues (brittle routing,
 dead code, UI clutter) and disagreed on others. The cleanup removed 60
 lines of dead code while adding persistent config and collapsible UI.
 
-### The Result (975 lines)
+### The Result (1,200+ lines)
 
-From 346-line MVP to 975-line production tool in one session. Every
-feature was proposed by one AI, challenged by another, and audited by
-a third.
+From 346-line MVP to 1,200+ line production tool. Every feature was
+proposed by one AI, challenged by another, and audited by a third.
 
 ---
 
@@ -175,10 +187,10 @@ full output — is the architecture these researchers theorize as the fix.
 
 ## Architecture
 
-975 lines of Python. CustomTkinter UI. No frameworks, no agents, no
-orchestration libraries — just a `call_any()` router that sends prompts
-to the right provider based on a model registry, and a pipeline that
-chains the outputs sequentially.
+`arc.py` (975 lines) + `pipeline.py` (236 lines). CustomTkinter UI.
+No frameworks, no agents, no orchestration libraries — just a `call_any()`
+router that sends prompts to the right provider based on a model registry,
+and a pipeline that chains the outputs sequentially.
 
 ## Roadmap
 
@@ -187,12 +199,14 @@ chains the outputs sequentially.
 - [x] Halt on error + retry, Model selector, Role rotation
 - [x] Convergence loop, Prompt export, Persistent config
 - [x] Collapsible UI, Registry router, Running guard
+- [x] JARVIS Pipeline (Execute → Claude Code → diff → confidence → Commit/Revert)
+- [x] Quick Ask IPC (voice-triggered AI queries via Samsara)
 - [ ] Confidence divergence indicators
 - [ ] Disagreement summary layer
 - [ ] Output formatting (markdown/structured)
 - [ ] Local model support (Ollama)
 - [ ] Cost tracking per session
-- [ ] Voice input via Samsara integration
+- [ ] Voice-triggered JARVIS pipeline ("Jarvis, improve error handling")
 
 ## The Name
 
