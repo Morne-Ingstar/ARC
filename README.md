@@ -1,102 +1,125 @@
 # ARC — Adversarial Reasoning Chain
 
-### Sequential adversarial AI review — forces reasoning depth through role-constrained critique chains, not parallel opinions.
+### Force AI models to disagree before they agree. Sequential adversarial review with Monte Carlo divergence — surfaces blind spots that consensus-driven systems miss.
 
 ---
 
 ## The Problem
 
-Every major AI model has blind spots. When two AIs agree, it feels like
-consensus. Sometimes it's just shared ignorance. Running models in
-parallel generates diversity, not depth. You get three opinions, not
-three layers of scrutiny.
+Every major AI model has blind spots. When two AIs agree, it feels like consensus. Sometimes it's just shared ignorance. Running models in parallel generates diversity, not depth. You get three opinions, not three layers of scrutiny.
 
 ## The Approach
 
-ARC uses **forced sequential critique with role-constrained reasoning:**
+ARC uses **forced sequential critique with role-constrained reasoning**,preceded by an optional **Monte Carlo divergence layer** that explores the problem space from multiple angles before the chain begins:
 
 ```
 Problem
   ↓
+Monte Carlo (optional) — N parallel agents explore orthogonal framings
+  ↓  Top 2-3 framings merged → fed into the chain
 Builder — proposes a concrete solution
   ↓
-Challenger — forced to find weaknesses in the Builder's solution
+Challenger — attacks the framing AND the solution
   ↓
 Auditor — audits the exchange, finds consensus failures,
            delivers an Executive Recommendation
   ↓
-Governor (you) — reads all three, decides what to do
+Disagreement Analysis — classifies how the final output
+           relates to the initial Monte Carlo analyses
   ↓
-[Optional] Seek Convergence — Builder and Challenger respond
-           to the Auditor's findings (agree/disagree)
+Governor (you) — reads the verdict card, reviews issue cards,
+           clicks Refine & Re-run or ships it
 ```
 
-Each AI's output becomes the input for the next. This creates **depth**,
-not just diversity.
+Each AI's output becomes the input for the next. This creates **depth**, not just diversity.
 
 ## Quick Start
 
-Requires **Python 3.10+** and at least one API key (OpenAI or Google)
-for the Challenger/Auditor roles.
+Requires **Python 3.10+** and at least two AI providers.
 
 ```bash
 git clone https://github.com/Morne-Ingstar/ARC.git
 cd ARC
 cp .env.example .env
-# Edit .env with your API keys
-pip install customtkinter python-dotenv openai google-generativeai anthropic
+# Edit .env with your API keys (any 2 of 3)
+pip install -r requirements.txt
 python arc.py
 ```
 
-Claude API is **optional** — paste Claude's response manually from
-claude.ai, or add an `ANTHROPIC_API_KEY` for auto-fill.
+**Providers supported:** Claude (Anthropic), GPT (OpenAI), Gemini (Google), Ollama (local models — free, no API key needed).
 
-**Cost per cycle:** ~$0.02–0.08 (Fast mode is free, Review is one API call).
+First launch shows a setup wizard that walks you through connecting your providers. You need at least two for adversarial review. Ollama alone works for experimentation.
+
+**Cost per cycle:** \~$0.02–0.08 with cloud models. Free with Ollama.
 
 ## Features
 
-**Three Depth Modes** — Fast (Builder only), Review (Builder → Challenger),
-Full (Builder → Challenger → Auditor).
+### Monte Carlo Divergence Layer (v2)
 
-**Strict Mode (Red Team)** — Forces the Challenger to argue *against* the
-solution. Must find the fatal flaw. Cannot agree unless it has exhaustively
-tried to break the proposal.
+Before the sequential chain runs, ARC sends the problem to N parallel agents (default: 6) with deliberately orthogonal reasoning lenses — first-principles analysis, adversarial thinking, simplicity-first, long-term maintainability, missing requirements, resource constraints, and more. 12 lenses in the pool, randomly sampled each run.
 
-**Role Rotation** — Any model can play any role. 🔀 Shuffle button
-randomizes assignments. Test whether value comes from structure or model
-assignments.
+A selector picks the top 2-3 framings and merges them. Rejected framings' unique insights are preserved. The merged output feeds into the chain, breaking the "framing lock-in" problem where the Builder's initial frame determines everything downstream.
 
-**Convergence Loop** — After a Full cycle, sends the Auditor's findings
-back to Builder and Challenger. Each responds with agree/disagree. One
-round only — persistent disagreement is signal, not noise.
+### Disagreement Analysis (v2)
 
-**Model Selector** — Dropdown per role showing all available models.
-Collapsed behind "▶ Model Routing" to keep the UI clean.
+After the chain completes, ARC compares the final recommendation against all Monte Carlo analyses and classifies the relationship:
 
-**Project Context** — Define your domain once ("Python 3.11, Windows,
-accessibility app"). Persists across sessions.
+- **VALIDATED** — chain confirmed what the parallel analyses found
+- **EVOLVED** — chain built on initial analyses with significant improvements
+- **DIVERGED** — chain found something the quick analyses missed (often good)
+- **CONTRADICTED** — chain contradicts initial analyses without justification (flag for review)
 
-**Prompt Export** — Generates a ready-to-use implementation prompt from
-cycle results. Copies to clipboard + saves to `exports/`.
+This replaces naive vote-counting with reasoning-aware confidence scoring.
 
-**JARVIS Pipeline** — One click turns the Auditor's recommendation into
-executed code. Creates an isolated `jarvis/*` git branch, pipes the
-recommendation to Claude Code CLI (`--allowed-tools "Read Edit"` — no
-shell access), captures the diff, runs tests, sends the diff back to the
-Auditor for a confidence rating (HIGH/MEDIUM/LOW), then shows Commit/Revert
-buttons. Safety: refuses to run on dirty git tree, 5-minute timeout,
-branch isolation, $1 budget cap.
+### Ollama Local Model Support (v2)
 
-**Quick Ask IPC** — Samsara voice integration. Say "Jarvis, ask Claude
-why is my dict throwing a KeyError" and the question arrives in ARC's
-output panel with a direct answer. Uses a shared JSON inbox file for
-zero-dependency inter-process communication.
+Any ARC role can use a local Ollama model. Auto-detects running models at startup. Ideal for Monte Carlo (cheap parallel exploration) and Builder (privacy-sensitive code). Challenger and Auditor benefit from stronger cloud models.
 
-**Persistent Config** — Model selections, strict mode, project context
-saved automatically. Everything persists across sessions.
+### Split-Panel IDE Layout (v2)
 
-**Halt on Error + Retry** — Pipeline pauses on API failure. Red retry
-button re-runs only the failed phase.
+Left panel holds input and controls. Right panel shows the pipeline visualization and results. Problem stays visible while results appear — no context-switching.
+
+### Pipeline Visualization (v2)
+
+Horizontal pipeline shows exactly where you are:
+
+```
+[Monte Carlo] ──→ [Builder] ──→ [Challenger] ──→ [Auditor] ──→ [Analysis]
+     ✓              ✓              ●                ○              ○
+                  (Claude)       (GPT-5.4)
+```
+
+Each node shows its model, pulses when active, and checks green on completion. Monte Carlo node hides when disabled.
+
+### Verdict Card + Issue Cards (v2)
+
+Results are no longer a wall of text. The verdict card shows confidence (HIGH/MEDIUM/LOW with action guidance), disagreement classification, and executive summary. Below it: individual issue cards with severity dots (critical/high/medium/low), expandable on click. Full AI outputs are available in collapsible panels for power users.
+
+### Refine & Re-run (v2)
+
+Click the button and ARC pre-fills the problem with the original input plus all identified issues. Run again for a deeper review. Iteration counter tracks refinement depth. This turns ARC from a one-shot tool into an iterative feedback loop.
+
+### First-Run Wizard (v2)
+
+Three-step setup: welcome with explanation, API key status with auto-detected Ollama, and quick start. Only appears once.
+
+### Core Features (v1)
+
+**Three Depth Modes** — Fast (Builder only), Review (Builder → Challenger), Full (Builder → Challenger → Auditor).
+
+**Strict Mode (Red Team)** — Forces the Challenger to argue against the solution. Must find the fatal flaw.
+
+**Convergence Loop** — Sends the Auditor's findings back to Builder and Challenger. Each responds with agree/disagree. One round only.
+
+**Role Rotation** — Any model can play any role. Shuffle button randomizes assignments.
+
+**Project Context** — Define your domain once. Persists across sessions.
+
+**Prompt Export** — Generates implementation prompts from cycle results.
+
+**JARVIS Pipeline** — Turns recommendations into executed code via Claude Code CLI. Branch isolation, diff review, confidence rating, commit/revert.
+
+**Quick Ask IPC** — Samsara voice integration for quick AI queries.
 
 ## When ARC Works (and When It Doesn't)
 
@@ -108,6 +131,20 @@ hallucination. ARC is a logic engine, not a search engine.
 
 **Overkill** for simple tasks. Use Fast mode.
 
+## How ARC Differs
+
+| Tool | Approach | Gap |
+|------|----------|-----|
+| **DSPy** (Stanford) | Framework for programming LLM pipelines | Optimizes pipelines, doesn't question reasoning quality |
+| **GSD** | Project management layer for Claude Code | Organizes work, doesn't challenge AI decisions |
+| **Tribunal** (MCP) | Three agents in parallel | No cross-critique, no depth |
+| **Ixiom** | IDE with multi-agent coordinator | Cooperative agents, not adversarial |
+| **ARC** | Sequential adversarial triad + Monte Carlo divergence | Each critiques the previous; divergence analysis validates the chain |
+
+ARC occupies a unique position: it's not a framework, not a project
+manager, and not an IDE. It's a **reasoning quality layer** — it
+pressure-tests whether the thinking behind a solution is sound.
+
 ---
 
 ## The Story
@@ -115,98 +152,54 @@ hallucination. ARC is a logic engine, not a search engine.
 ARC was born, designed, reviewed, and refined in a single development
 session — and the tool was used to build itself.
 
-### The Observation
+The developer noticed that routing problems between Claude and GPT
+consistently caught real gaps. But sometimes both would agree on
+something wrong. Adding Gemini as a third observer from a different
+model family caught things neither flagged.
 
-While building [Samsara](https://github.com/Morne-Ingstar/Samsara) (a
-voice dictation app), the developer noticed that routing problems between
-Claude and GPT consistently caught real gaps. But sometimes both would
-agree on something wrong. Adding Gemini as a third observer from a
-different model family caught things neither flagged.
+The MVP (346 lines) was submitted to its own process for review. GPT
+and Gemini independently identified the same issues and disagreed on
+others. Every feature in the roadmap was proposed by one AI, challenged
+by another, and audited by a third.
 
-### The MVP (346 lines)
-
-Paste a problem, paste Claude's response, click a button. GPT reviews,
-Gemini audits. Three API calls in sequence.
-
-### The ARC Review (the tool designs itself)
-
-The MVP was submitted to Gemini for a concept review. Gemini's audit
-went to GPT for a meta-review. GPT's response went back to Gemini. This
-three-way exchange produced the feature roadmap:
-
-| Feature | Proposed by | Validated by |
-|---------|------------|-------------|
-| Strict Mode (Red Team) | GPT | Gemini ("killer feature") |
-| Mode selector (Fast/Review/Full) | GPT | Gemini |
-| Executive Recommendations | Gemini | GPT |
-| Convergence Loop | Developer | Both reviewers |
-| Persistent Config | Both reviewers | (unanimous) |
-
-### ARC in the Field
-
-ARC was immediately put to work on real problems in Samsara:
-
-- **Echo cancellation** — Claude diagnosed a Gemini API error as "safety
-  filter." Gemini's audit corrected this: the finish_reason was STOP (1),
-  not SAFETY (3). Claude had hallucinated the diagnosis.
-- **Speech threshold** — Claude proposed auto-calibration with a 0.01
-  floor. Gemini caught that 0.01 was the exact value that caused the
-  original bug. The fix would have reintroduced the problem it solved.
-- **Settings UI** — GPT recommended deleting "pause." Gemini defended it
-  as an accessibility lifeline. The resulting design was better than
-  either recommendation alone.
-
-### ARC Reviews ARC
-
-The tool was submitted to its own process for a full code review. GPT
-and Gemini independently identified the same issues (brittle routing,
-dead code, UI clutter) and disagreed on others. The cleanup removed 60
-lines of dead code while adding persistent config and collapsible UI.
-
-### The Result (1,200+ lines)
-
-From 346-line MVP to 1,200+ line production tool. Every feature was
-proposed by one AI, challenged by another, and audited by a third.
+The v2 architecture (Monte Carlo, Ollama, disagreement analysis) was
+designed the same way — proposed, sent to GPT and Gemini for review,
+consensus extracted, then implemented. Zero disagreements on the three
+core upgrades (top-k merge, orthogonal variation, reasoning-aware
+confidence scoring).
 
 ---
 
-## Research Context
-
-A 2026 paper titled "If You Want Coherence, Orchestrate a Team of Rivals"
-found that parallel AI systems "cannot detect conflicts" between agents.
-ARC's sequential approach — where each AI critiques the previous one's
-full output — is the architecture these researchers theorize as the fix.
-
-| Tool | Approach | Limitation |
-|------|----------|------------|
-| **Tribunal** (MCP) | Three agents in parallel | No cross-critique |
-| **MindStudio/Codex** | Two-node second opinion | No auditor |
-| **AgentStack/Mastra** | Cooperative pipeline | Not adversarial |
-| **DeepTeam/Orq.ai** | Adversarial Red Team | Security only |
-| **ARC** | Sequential adversarial triad | Each critiques the previous; third audits for consensus failures |
-
 ## Architecture
 
-`arc.py` (975 lines) + `pipeline.py` (236 lines). CustomTkinter UI.
+`arc.py` (~2,100 lines) + `pipeline.py` (~380 lines). CustomTkinter UI.
 No frameworks, no agents, no orchestration libraries — just a `call_any()`
-router that sends prompts to the right provider based on a model registry,
-and a pipeline that chains the outputs sequentially.
+router, a Monte Carlo fan-out with ThreadPoolExecutor, and a pipeline
+that chains outputs sequentially.
+
 
 ## Roadmap
 
+### Completed
 - [x] Sequential pipeline, Strict Mode, Mode selector
 - [x] Project Context, Exchange saving, Executive Recommendations
 - [x] Halt on error + retry, Model selector, Role rotation
 - [x] Convergence loop, Prompt export, Persistent config
-- [x] Collapsible UI, Registry router, Running guard
 - [x] JARVIS Pipeline (Execute → Claude Code → diff → confidence → Commit/Revert)
 - [x] Quick Ask IPC (voice-triggered AI queries via Samsara)
-- [ ] Confidence divergence indicators
-- [ ] Disagreement summary layer
-- [ ] Output formatting (markdown/structured)
-- [ ] Local model support (Ollama)
+- [x] Monte Carlo Divergence Layer (12 orthogonal lenses, top-k merge)
+- [x] Ollama local model support (auto-detect, any role)
+- [x] Disagreement Analysis (VALIDATED/EVOLVED/DIVERGED/CONTRADICTED)
+- [x] Split-panel IDE layout with pipeline visualization
+- [x] Structured JSON output + issue cards + verdict card
+- [x] First-run setup wizard
+- [x] Refine & Re-run iterative loop
+
+### Planned
+- [ ] JARVIS Active Orchestrator (unbuffered I/O, stdin, live monitoring)
 - [ ] Cost tracking per session
-- [ ] Voice-triggered JARVIS pipeline ("Jarvis, improve error handling")
+- [ ] Session history with diff tracking across iterations
+- [ ] Mobile companion app (phone as wireless mic for Samsara → ARC)
 
 ## The Name
 
@@ -216,22 +209,22 @@ and a pipeline that chains the outputs sequentially.
 
 ## License
 
-MIT License — free for personal and commercial use.
+BSL-1.1 (Business Source License) — free for all non-commercial use.
+Converts to MIT on April 23, 2030. See [LICENSE](LICENSE) for details.
 
-If ARC's adversarial review process has improved your code, consider
-[supporting the project](https://ko-fi.com/morneingstar) — built to make AI
-collaboration smarter, kept free for the community.
+If ARC's adversarial review process has improved your work, consider
+[supporting the project](https://ko-fi.com/morneingstar) — built to make
+AI reasoning trustworthy, kept free for the community.
 
 ## Acknowledgments
 
-Built by [Morne](https://github.com/Morne-Ingstar). Designed
-collaboratively with Claude (Anthropic), ChatGPT (OpenAI), and Gemini
-(Google DeepMind). Every feature was reviewed through the ARC process
-before implementation.
+Built by [Morne](https://github.com/Morne-Ingstar). Every feature was
+designed collaboratively with Claude (Anthropic), ChatGPT (OpenAI), and
+Gemini (Google DeepMind) — and reviewed through the ARC process before
+implementation.
 
 ---
 
 <p align="center">
-  <i>ARC was built in one session. The tool designed itself through its
-  own process.</i>
+  <i>ARC was built in one session. It has been designing itself ever since.</i>
 </p>
