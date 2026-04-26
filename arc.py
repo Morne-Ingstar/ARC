@@ -956,7 +956,7 @@ class ARCApp:
                      font=ctk.CTkFont(size=13, weight="bold"),
                      anchor="w").pack(fill="x", padx=8, pady=(6, 2))
 
-        self.problem_box = ctk.CTkTextbox(prob_frame, height=70,
+        self.problem_box = ctk.CTkTextbox(prob_frame, height=200,
                                            font=ctk.CTkFont(size=13))
         self.problem_box.pack(fill="x", padx=8, pady=(0, 6))
 
