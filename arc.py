@@ -869,15 +869,27 @@ class ARCApp:
         # Monte Carlo divergence: runs N parallel cheap agents with orthogonal
         # lenses before the Builder/Challenger/Auditor chain. Default off;
         # persisted per-user in arc_config.json.
+        mc_frame = ctk.CTkFrame(self.left_panel, fg_color="transparent")
+        mc_frame.pack(fill="x", padx=12, pady=(6, 0))
+
         self.mc_var = ctk.BooleanVar(value=self._config.get('monte_carlo', False))
         self.mc_check = ctk.CTkCheckBox(
-            mode_frame, text="Monte Carlo",
+            mc_frame, text="Monte Carlo Divergence",
             variable=self.mc_var,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=12),
             height=28, checkbox_width=18, checkbox_height=18)
-        self.mc_check.pack(side="right", padx=(0, 8))
+        self.mc_check.pack(side="left")
 
         self.mc_n_var = ctk.IntVar(value=self._config.get('monte_carlo_n', 6))
+        ctk.CTkLabel(mc_frame, text="Agents:",
+                     font=ctk.CTkFont(size=11),
+                     text_color="#888888").pack(side="left", padx=(16, 4))
+        self.mc_n_menu = ctk.CTkOptionMenu(
+            mc_frame, variable=self.mc_n_var,
+            values=["3", "4", "6", "8", "10"],
+            width=60, height=24,
+            font=ctk.CTkFont(size=11))
+        self.mc_n_menu.pack(side="left")
 
         # --- Role Assignment (collapsible) ---
         self._roles_visible = False
