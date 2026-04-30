@@ -131,6 +131,22 @@ hallucination. ARC is a logic engine, not a search engine.
 
 **Overkill** for simple tasks. Use Fast mode.
 
+## Empirical Verification Gate
+
+ARC v2.1 introduces a principle baked into all three role prompts: **no architectural recommendation may be based on an unverified assumption about external system behavior.**
+
+This was learned the hard way. During development of Samsara (a voice control tool), ARC reviewed a problem where keyboard simulation failed while physical modifier keys were held. Three ARC rounds — involving Claude, GPT, and Gemini — debated Windows input architecture, held modifier key state, IME integration, and alternative hotkeys. All three models accepted the premise that "Windows re-asserts physical key state, making synthetic keystrokes unreliable" as an architectural fact.
+
+**It wasn't.** A 10-line test script proved that the actual root cause was `pyautogui.hotkey()` silently dropping the Shift key from key combinations. The "fundamental Windows limitation" was a library bug. Three AI models, four iterations, and the fix was a one-function swap to `ctypes.SendInput`.
+
+**The rule now:**
+
+- **Builder:** When claiming an external system limitation, must provide a minimal test script (<30 lines) that proves it.
+- **Challenger:** When the Builder claims "it can't be done," must demand the test script and propose an alternative test that could disprove the claim.
+- **Auditor:** Must flag any claim about external system behavior that was accepted without empirical verification.
+
+AI models are excellent at reasoning from premises but terrible at questioning whether the premises are true. The Empirical Verification Gate forces that question before reasoning begins.
+
 ## How ARC Differs
 
 | Tool | Approach | Gap |
